@@ -37,6 +37,15 @@ export class GameScene extends Phaser.Scene {
   private dragZoneTop = 0;
   private dragZoneHeight = 0;
 
+  // ── History plots ──────────────────────────────────────────────────────────
+  private histPos: number[] = [];
+  private histVel: number[] = [];
+  private histAcc: number[] = [];
+  private prevEdY = 0;
+  private posPlotTop = 0;
+  private derivPlotTop = 0;
+  private plotH = 0;
+
   private readonly POS_SENS = 1.0;
   private readonly VEL_SENS = 600;
   private readonly ACC_SENS = 1200;
@@ -59,6 +68,9 @@ export class GameScene extends Phaser.Scene {
   private pauseButton!: Phaser.GameObjects.Text;
   private modeButtons: Phaser.GameObjects.Text[] = [];
   private dragValueLabel!: Phaser.GameObjects.Text;
+  private gfxPosPlot!: Phaser.GameObjects.Graphics;
+  private gfxDerivPlot!: Phaser.GameObjects.Graphics;
+  private derivPlotLabel!: Phaser.GameObjects.Text;
 
   constructor() {
     super({ key: 'GameScene' });
@@ -76,6 +88,11 @@ export class GameScene extends Phaser.Scene {
     this.dragZoneTop = this.PANEL_Y + btnH + 8 + row2H + 16;
     this.dragZoneHeight = this.H - this.dragZoneTop - 8;
 
+    this.plotH = Math.floor((this.dragZoneHeight - 6) / 2);
+    this.posPlotTop = this.dragZoneTop;
+    this.derivPlotTop = this.dragZoneTop + this.plotH + 6;
+    this.prevEdY = this.PANEL_Y / 2;
+
     this.generateTarget();
 
     // ── Graphics layers (order = z-order) ─────────────────────────────────
@@ -87,6 +104,10 @@ export class GameScene extends Phaser.Scene {
     // ── Static panel background ────────────────────────────────────────────
     this.add.rectangle(this.W / 2, this.PANEL_Y + (this.H - this.PANEL_Y) / 2,
       this.W, this.H - this.PANEL_Y, 0x0d0d1a);
+
+    // ── History plot graphics (above panel bg, below buttons) ──────────────
+    this.gfxPosPlot = this.add.graphics();
+    this.gfxDerivPlot = this.add.graphics();
 
     // ── Panel divider ──────────────────────────────────────────────────────
     this.add.rectangle(this.W / 2, this.PANEL_Y, this.W, 2, 0x444466);
@@ -149,6 +170,9 @@ export class GameScene extends Phaser.Scene {
       this.scoreSquaredSum = 0;
       this.scoreFrameCount = 0;
       this.trail = [];
+      this.histPos = [];
+      this.histVel = [];
+      this.histAcc = [];
       this.scoreLabel.setText('RMSE: —').setColor('#44ff88');
     });
 
@@ -160,13 +184,14 @@ export class GameScene extends Phaser.Scene {
       { fontSize: '16px', color: '#8888aa' }
     ).setOrigin(0.5, 1);
 
-    // ── Drag zone hint ─────────────────────────────────────────────────────
-    this.add.text(
-      this.W / 2,
-      this.dragZoneTop + this.dragZoneHeight / 2,
-      '↕ drag here',
-      { fontSize: '18px', color: '#333355' }
-    ).setOrigin(0.5);
+    // ── Plot labels ────────────────────────────────────────────────────────
+    this.add.text(4, this.posPlotTop + 2, 'x', {
+      fontSize: '11px', color: '#00ddaa',
+    }).setOrigin(0, 0);
+
+    this.derivPlotLabel = this.add.text(4, this.derivPlotTop + 2, 'ẋ', {
+      fontSize: '11px', color: '#ffaa44',
+    }).setOrigin(0, 0);
 
     // ── Score label (top-right of grid) ───────────────────────────────────
     this.scoreLabel = this.add.text(this.W - 12, 10, 'RMSE: —', {
@@ -218,6 +243,8 @@ export class GameScene extends Phaser.Scene {
     this.drawTarget();
     this.drawTrail();
     this.drawDot();
+    this.drawPosPlot();
+    this.drawDerivPlot();
     this.updateLabels();
   }
 
@@ -246,8 +273,24 @@ export class GameScene extends Phaser.Scene {
     this.trailSampleTimer += dt;
     if (this.trailSampleTimer < this.TRAIL_SAMPLE_INTERVAL) return;
     this.trailSampleTimer = 0;
+
     this.trail.push({ worldX: this.gridOffsetX, y: this.edY });
     if (this.trail.length > this.TRAIL_MAX_POINTS) this.trail.shift();
+
+    // History for mini-plots — in Pos mode velocity is finite-differenced
+    const sampledVel = this.controlMode === 'Pos'
+      ? (this.edY - this.prevEdY) / this.TRAIL_SAMPLE_INTERVAL
+      : this.edVel;
+    this.prevEdY = this.edY;
+
+    this.histPos.push(this.edY);
+    this.histVel.push(sampledVel);
+    this.histAcc.push(this.edAcc);
+    if (this.histPos.length > this.TRAIL_MAX_POINTS) {
+      this.histPos.shift();
+      this.histVel.shift();
+      this.histAcc.shift();
+    }
   }
 
   private cullTrail(): void {
@@ -398,6 +441,86 @@ export class GameScene extends Phaser.Scene {
     const unit = this.controlMode === 'Pos' ? 'px' :
                  this.controlMode === 'Vel' ? 'px/s' : 'px/s²';
     this.dragValueLabel.setText(`${this.controlMode}: ${val.toFixed(1)} ${unit}`);
+    this.derivPlotLabel.setText(this.controlMode === 'Acc' ? 'ẍ (acc)' : 'ẋ (vel)');
+  }
+
+  private drawPosPlot(): void {
+    this.gfxPosPlot.clear();
+    const t = this.posPlotTop;
+    const h = this.plotH;
+
+    this.gfxPosPlot.fillStyle(0x0a0a1a, 1);
+    this.gfxPosPlot.fillRect(0, t, this.W, h);
+
+    // Mid-position reference line
+    this.gfxPosPlot.lineStyle(1, 0x1a1a3a, 1);
+    this.gfxPosPlot.beginPath();
+    this.gfxPosPlot.moveTo(0, t + h / 2);
+    this.gfxPosPlot.lineTo(this.W, t + h / 2);
+    this.gfxPosPlot.strokePath();
+
+    // "Now" vertical marker at edX
+    this.gfxPosPlot.lineStyle(1, 0x333355, 1);
+    this.gfxPosPlot.beginPath();
+    this.gfxPosPlot.moveTo(this.edX, t);
+    this.gfxPosPlot.lineTo(this.edX, t + h);
+    this.gfxPosPlot.strokePath();
+
+    if (this.histPos.length < 2) return;
+
+    this.gfxPosPlot.lineStyle(2, 0x00ddaa, 0.9);
+    this.gfxPosPlot.beginPath();
+    let first = true;
+    for (let i = 0; i < this.histPos.length; i++) {
+      const x = this.edX - (this.histPos.length - 1 - i);
+      if (x < 0) continue;
+      const y = t + (this.histPos[i] / this.PANEL_Y) * h;
+      if (first) { this.gfxPosPlot.moveTo(x, y); first = false; }
+      else        { this.gfxPosPlot.lineTo(x, y); }
+    }
+    this.gfxPosPlot.strokePath();
+  }
+
+  private drawDerivPlot(): void {
+    this.gfxDerivPlot.clear();
+    const t = this.derivPlotTop;
+    const h = this.plotH;
+
+    this.gfxDerivPlot.fillStyle(0x0a0a1a, 1);
+    this.gfxDerivPlot.fillRect(0, t, this.W, h);
+
+    // Zero line (center)
+    this.gfxDerivPlot.lineStyle(1, 0x1a1a3a, 1);
+    this.gfxDerivPlot.beginPath();
+    this.gfxDerivPlot.moveTo(0, t + h / 2);
+    this.gfxDerivPlot.lineTo(this.W, t + h / 2);
+    this.gfxDerivPlot.strokePath();
+
+    // "Now" vertical marker
+    this.gfxDerivPlot.lineStyle(1, 0x333355, 1);
+    this.gfxDerivPlot.beginPath();
+    this.gfxDerivPlot.moveTo(this.edX, t);
+    this.gfxDerivPlot.lineTo(this.edX, t + h);
+    this.gfxDerivPlot.strokePath();
+
+    const useAcc = this.controlMode === 'Acc';
+    const data  = useAcc ? this.histAcc : this.histVel;
+    const range = useAcc ? this.MAX_ACC : this.MAX_VEL;
+
+    if (data.length < 2) return;
+
+    this.gfxDerivPlot.lineStyle(2, 0xffaa44, 0.9);
+    this.gfxDerivPlot.beginPath();
+    let first = true;
+    for (let i = 0; i < data.length; i++) {
+      const x = this.edX - (data.length - 1 - i);
+      if (x < 0) continue;
+      const norm = Phaser.Math.Clamp(data[i] / range, -1, 1);
+      const y = t + h / 2 - norm * (h / 2);
+      if (first) { this.gfxDerivPlot.moveTo(x, y); first = false; }
+      else        { this.gfxDerivPlot.lineTo(x, y); }
+    }
+    this.gfxDerivPlot.strokePath();
   }
 
   private isInDragZone(p: Phaser.Input.Pointer): boolean {
