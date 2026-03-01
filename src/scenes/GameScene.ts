@@ -47,6 +47,7 @@ export class GameScene extends Phaser.Scene {
   private targetComponents: TargetComponent[] = [];
   private scoreSquaredSum = 0;
   private scoreFrameCount = 0;
+  private paused = false;
 
   // ── Phaser objects ────────────────────────────────────────────────────────
   private gfxGrid!: Phaser.GameObjects.Graphics;
@@ -55,6 +56,7 @@ export class GameScene extends Phaser.Scene {
   private gfxDot!: Phaser.GameObjects.Graphics;
   private edLabel!: Phaser.GameObjects.Text;
   private scoreLabel!: Phaser.GameObjects.Text;
+  private pauseButton!: Phaser.GameObjects.Text;
   private modeButtons: Phaser.GameObjects.Text[] = [];
   private dragValueLabel!: Phaser.GameObjects.Text;
 
@@ -70,7 +72,8 @@ export class GameScene extends Phaser.Scene {
     this.edY = this.PANEL_Y / 2;
 
     const btnH = 48;
-    this.dragZoneTop = this.PANEL_Y + btnH + 28;
+    const row2H = 36;
+    this.dragZoneTop = this.PANEL_Y + btnH + 8 + row2H + 16;
     this.dragZoneHeight = this.H - this.dragZoneTop - 8;
 
     this.generateTarget();
@@ -117,6 +120,37 @@ export class GameScene extends Phaser.Scene {
       this.modeButtons.push(btn);
     });
     this.updateButtonStyles();
+
+    // ── Pause / Reset buttons (second row) ────────────────────────────────
+    const row2Y = this.PANEL_Y + btnH + 8 + 18;  // center of second row
+
+    this.pauseButton = this.add.text(this.W / 4, row2Y, '⏸  Pause', {
+      fontSize: '18px',
+      color: '#aaaacc',
+      backgroundColor: '#22224a',
+      padding: { x: 16, y: 8 },
+    }).setOrigin(0.5).setInteractive();
+
+    this.pauseButton.on('pointerdown', () => {
+      this.paused = !this.paused;
+      this.pauseButton.setText(this.paused ? '▶  Resume' : '⏸  Pause');
+      this.pauseButton.setColor(this.paused ? '#44ff88' : '#aaaacc');
+      this.pauseButton.setBackgroundColor(this.paused ? '#1a4a1a' : '#22224a');
+    });
+
+    const resetBtn = this.add.text(3 * this.W / 4, row2Y, '↺  Reset', {
+      fontSize: '18px',
+      color: '#cc8888',
+      backgroundColor: '#22224a',
+      padding: { x: 16, y: 8 },
+    }).setOrigin(0.5).setInteractive();
+
+    resetBtn.on('pointerdown', () => {
+      this.scoreSquaredSum = 0;
+      this.scoreFrameCount = 0;
+      this.trail = [];
+      this.scoreLabel.setText('RMSE: —').setColor('#44ff88');
+    });
 
     // ── Drag value label ──────────────────────────────────────────────────
     this.dragValueLabel = this.add.text(
@@ -171,12 +205,15 @@ export class GameScene extends Phaser.Scene {
   update(_time: number, delta: number): void {
     const dt = delta / 1000;
 
-    this.gridOffsetX += this.SCROLL_SPEED * dt;
-    this.integratePhysics(dt);
-    this.clampEdY();
-    this.updateScore();
-    this.sampleTrail(dt);
-    this.cullTrail();
+    if (!this.paused) {
+      this.gridOffsetX += this.SCROLL_SPEED * dt;
+      this.integratePhysics(dt);
+      this.updateScore();
+      this.sampleTrail(dt);
+      this.cullTrail();
+    }
+
+    this.clampEdY();  // always clamp so Pos drag works while paused
     this.drawGrid();
     this.drawTarget();
     this.drawTrail();
