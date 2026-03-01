@@ -2,6 +2,7 @@ import Phaser from 'phaser';
 
 type ControlMode = 'Pos' | 'Vel' | 'Acc';
 interface TrailPoint { worldX: number; y: number; }
+interface TargetComponent { amplitude: number; frequency: number; phase: number; }
 
 export class GameScene extends Phaser.Scene {
   // ── Layout ────────────────────────────────────────────────────────────────
@@ -42,11 +43,18 @@ export class GameScene extends Phaser.Scene {
   private readonly MAX_VEL = 800;
   private readonly MAX_ACC = 1600;
 
+  // ── Target curve ──────────────────────────────────────────────────────────
+  private targetComponents: TargetComponent[] = [];
+  private scoreSquaredSum = 0;
+  private scoreFrameCount = 0;
+
   // ── Phaser objects ────────────────────────────────────────────────────────
   private gfxGrid!: Phaser.GameObjects.Graphics;
+  private gfxTarget!: Phaser.GameObjects.Graphics;
   private gfxTrail!: Phaser.GameObjects.Graphics;
   private gfxDot!: Phaser.GameObjects.Graphics;
   private edLabel!: Phaser.GameObjects.Text;
+  private scoreLabel!: Phaser.GameObjects.Text;
   private modeButtons: Phaser.GameObjects.Text[] = [];
   private dragValueLabel!: Phaser.GameObjects.Text;
 
@@ -65,8 +73,11 @@ export class GameScene extends Phaser.Scene {
     this.dragZoneTop = this.PANEL_Y + btnH + 28;
     this.dragZoneHeight = this.H - this.dragZoneTop - 8;
 
+    this.generateTarget();
+
     // ── Graphics layers (order = z-order) ─────────────────────────────────
     this.gfxGrid = this.add.graphics();
+    this.gfxTarget = this.add.graphics();
     this.gfxTrail = this.add.graphics();
     this.gfxDot = this.add.graphics();
 
@@ -123,6 +134,12 @@ export class GameScene extends Phaser.Scene {
       { fontSize: '18px', color: '#333355' }
     ).setOrigin(0.5);
 
+    // ── Score label (top-right of grid) ───────────────────────────────────
+    this.scoreLabel = this.add.text(this.W - 12, 10, 'RMSE: —', {
+      fontSize: '16px',
+      color: '#44ff88',
+    }).setOrigin(1, 0);
+
     // ── Ed label (moves with dot) ──────────────────────────────────────────
     this.edLabel = this.add.text(this.edX, this.edY - this.DOT_RADIUS - 6, 'Ed', {
       fontSize: '14px',
@@ -157,9 +174,11 @@ export class GameScene extends Phaser.Scene {
     this.gridOffsetX += this.SCROLL_SPEED * dt;
     this.integratePhysics(dt);
     this.clampEdY();
+    this.updateScore();
     this.sampleTrail(dt);
     this.cullTrail();
     this.drawGrid();
+    this.drawTarget();
     this.drawTrail();
     this.drawDot();
     this.updateLabels();
@@ -241,6 +260,63 @@ export class GameScene extends Phaser.Scene {
 
     // Move the "Ed" label with the dot
     this.edLabel.setPosition(this.edX, this.edY - this.DOT_RADIUS - 4);
+  }
+
+  private generateTarget(): void {
+    for (let i = 0; i < 3; i++) {
+      this.targetComponents.push({
+        amplitude: 30 + Math.random() * 50,
+        frequency: 0.005 + Math.random() * 0.012,
+        phase:     Math.random() * Math.PI * 2,
+      });
+    }
+  }
+
+  private getTargetY(worldX: number): number {
+    let y = this.PANEL_Y / 2;
+    for (const c of this.targetComponents) {
+      y += c.amplitude * Math.sin(c.frequency * worldX + c.phase);
+    }
+    return Phaser.Math.Clamp(y, this.DOT_RADIUS * 2, this.PANEL_Y - this.DOT_RADIUS * 2);
+  }
+
+  private updateScore(): void {
+    const targetY = this.getTargetY(this.gridOffsetX);
+    const err = this.edY - targetY;
+    this.scoreSquaredSum += err * err;
+    this.scoreFrameCount += 1;
+
+    const rmse = Math.sqrt(this.scoreSquaredSum / this.scoreFrameCount);
+    const color = rmse < 15 ? '#44ff88' : rmse < 40 ? '#ffcc00' : '#ff4466';
+    this.scoreLabel.setColor(color);
+    this.scoreLabel.setText(`RMSE: ${rmse.toFixed(1)} px`);
+  }
+
+  private drawTarget(): void {
+    this.gfxTarget.clear();
+    this.gfxTarget.lineStyle(2, 0x00ccff, 0.85);
+
+    this.gfxTarget.beginPath();
+    for (let sx = 0; sx <= this.W; sx += 3) {
+      const worldX = this.gridOffsetX - this.edX + sx;
+      const ty = this.getTargetY(worldX);
+      if (sx === 0) this.gfxTarget.moveTo(sx, ty);
+      else          this.gfxTarget.lineTo(sx, ty);
+    }
+    this.gfxTarget.strokePath();
+
+    // Crosshair at current target position (at edX)
+    const currentTargetY = this.getTargetY(this.gridOffsetX);
+    this.gfxTarget.fillStyle(0x00ccff, 1.0);
+    this.gfxTarget.fillRect(this.edX - 6, currentTargetY - 2, 12, 4);
+    this.gfxTarget.fillRect(this.edX - 2, currentTargetY - 6, 4, 12);
+
+    // Error bar from Ed to target
+    this.gfxTarget.lineStyle(1, 0xffffff, 0.25);
+    this.gfxTarget.beginPath();
+    this.gfxTarget.moveTo(this.edX, this.edY);
+    this.gfxTarget.lineTo(this.edX, currentTargetY);
+    this.gfxTarget.strokePath();
   }
 
   private applyDragDelta(delta: number): void {
